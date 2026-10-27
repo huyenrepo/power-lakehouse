@@ -1,9 +1,10 @@
 data "aws_region" "current" {}
 
-locals {
-  function_name   = "entsoe-extract"
-  entsoe_param_arn = "arn:aws:ssm:${data.aws_region.current.name}:${data.aws_caller_identity.me.account_id}:parameter${var.entsoe_param_name}"
-}
+   locals {
+     function_name        = "entsoe-extract"
+     entsoe_param_arn     = "arn:aws:ssm:${data.aws_region.current.name}:${data.aws_caller_identity.me.account_id}:parameter${var.entsoe_param_name}"
+     databricks_param_arn = "arn:aws:ssm:${data.aws_region.current.name}:${data.aws_caller_identity.me.account_id}:parameter${var.databricks_token_param_name}"
+   }
 
 # Zip the build folder
 data "archive_file" "lambda" {
@@ -47,6 +48,11 @@ resource "aws_iam_role_policy" "lambda_access" {
         Effect   = "Allow"
         Action   = ["ssm:GetParameter"]
         Resource = local.entsoe_param_arn
+      },
+      {
+     Effect   = "Allow"
+     Action   = ["ssm:GetParameter"]
+     Resource = [local.entsoe_param_arn, local.databricks_param_arn]
       }
     ]
   })
@@ -70,12 +76,15 @@ resource "aws_lambda_function" "extract" {
   filename         = data.archive_file.lambda.output_path
   source_code_hash = data.archive_file.lambda.output_base64sha256
 
-  environment {
-    variables = {
-      RAW_BUCKET        = aws_s3_bucket.raw.bucket
-      ENTSOE_PARAM_NAME = var.entsoe_param_name
-    }
-  }
+   environment {
+     variables = {
+       RAW_BUCKET             = aws_s3_bucket.raw.bucket
+       ENTSOE_PARAM_NAME      = var.entsoe_param_name
+       DATABRICKS_HOST        = var.databricks_host
+       DATABRICKS_TOKEN_PARAM = var.databricks_token_param_name
+       VOLUME_BASE            = var.volume_base
+     }
+   }
 
   depends_on = [aws_cloudwatch_log_group.lambda]
 }

@@ -1,4 +1,5 @@
-"""Fetch ENTSO-E day-ahead prices and archive the raw XML in S3.
+"""Fetch ENTSO-E day-ahead prices, archive the raw XML in S3,
+and deliver a copy to a Databricks Unity Catalog Volume.
 """
 import argparse
 import logging
@@ -14,10 +15,21 @@ import boto3
 API_URL = "https://web-api.tp.entsoe.eu/api"
 BERLIN = ZoneInfo("Europe/Berlin")
 UTC = ZoneInfo("UTC")
-BIDDING_ZONES = {"DE-LU": "10Y1001A1001A82H"}  # add more zones later
+BIDDING_ZONES = {"DE-LU": "10Y1001A1001A82H"}
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
+
+
+def get_secret(env_var: str, param_env_var: str) -> str:
+    """Local runs: read from env var. Lambda: read from SSM Parameter Store."""
+    if os.environ.get(env_var):
+        return os.environ[env_var]
+    param_name = os.environ.get(param_env_var)
+    if not param_name:
+        raise KeyError(f"Set {env_var} (local) or {param_env_var} (SSM name)")
+    resp = boto3.client("ssm").get_parameter(Name=param_name, WithDecryption=True)
+    return resp["Parameter"]["Value"]
 
 
 def delivery_window_utc(delivery_date: date) -> tuple[str, str]:
@@ -33,7 +45,7 @@ def fetch_day_ahead_prices(token: str, bzn_code: str, delivery_date: date) -> by
     period_start, period_end = delivery_window_utc(delivery_date)
     params = {
         "securityToken": token,
-        "documentType": "A44",  # day-ahead prices
+        "documentType": "A44",
         "in_Domain": bzn_code,
         "out_Domain": bzn_code,
         "periodStart": period_start,
@@ -48,13 +60,32 @@ def fetch_day_ahead_prices(token: str, bzn_code: str, delivery_date: date) -> by
         if b"Acknowledgement_MarketDocument" in body:
             logger.warning("No data for %s on %s", bzn_code, delivery_date)
             return None
-        # never log the URL: it contains the token
         raise RuntimeError(f"ENTSO-E HTTP {e.code}: {body[:300]!r}") from e
 
     if b"Acknowledgement_MarketDocument" in body:
         logger.warning("No data for %s on %s", bzn_code, delivery_date)
         return None
     return body
+
+
+def upload_to_volume(host: str, token: str, volume_path: str, body: bytes) -> None:
+    """PUT a file into a Unity Catalog Volume via the Databricks Files API."""
+    path = urllib.parse.quote(volume_path, safe="/=")
+    url = f"{host.rstrip('/')}/api/2.0/fs/files{path}?overwrite=true"
+    req = urllib.request.Request(
+        url,
+        data=body,
+        method="PUT",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/octet-stream",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60):
+            pass  # 204 No Content = success
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"Databricks HTTP {e.code}: {e.read()[:300]!r}") from e
 
 
 def s3_key(bzn: str, delivery_date: date) -> str:
@@ -69,54 +100,62 @@ def default_dates(today: date, lookback_days: int = 2) -> list[date]:
     return [today + timedelta(days=d) for d in range(1, -lookback_days - 1, -1)]
 
 
-def run(delivery_dates: list[date], bucket: str, token: str, s3=None) -> list[dict]:
+def run(delivery_dates, bucket, entsoe_token, databricks=None, s3=None) -> list[dict]:
+    """databricks: {"host", "token", "volume_base"} or None to skip the Volume upload."""
     s3 = s3 or boto3.client("s3")
     results = []
     for bzn, code in BIDDING_ZONES.items():
         for d in delivery_dates:
-            body = fetch_day_ahead_prices(token, code, d)
+            body = fetch_day_ahead_prices(entsoe_token, code, d)
             if body is None:
                 results.append({"bzn": bzn, "date": d.isoformat(), "status": "no_data"})
                 continue
+
+            # 1. Archive in S3 first: this is the source of truth
             key = s3_key(bzn, d)
             s3.put_object(Bucket=bucket, Key=key, Body=body, ContentType="application/xml")
             logger.info("Saved s3://%s/%s (%d bytes)", bucket, key, len(body))
-            results.append({"bzn": bzn, "date": d.isoformat(), "status": "saved", "key": key})
+            result = {"bzn": bzn, "date": d.isoformat(), "status": "saved", "key": key}
+
+            # 2. Deliver a copy to Databricks
+            if databricks:
+                volume_path = f"{databricks['volume_base']}/{key}"
+                try:
+                    upload_to_volume(databricks["host"], databricks["token"], volume_path, body)
+                    logger.info("Uploaded %s", volume_path)
+                    result["volume_path"] = volume_path
+                except Exception as e:
+                    logger.error("Volume upload failed for %s: %s", volume_path, e)
+                    result["status"] = "s3_only"
+            results.append(result)
+
+    failed = [r for r in results if r["status"] == "s3_only"]
+    if failed:
+        # fail the run so it shows as an error and the schedule retries
+        raise RuntimeError(f"Volume upload failed for {len(failed)} file(s): {failed}")
     return results
 
-def get_token() -> str:
-    """Local runs: env var. Lambda: SSM Parameter Store."""
-    if os.environ.get("ENTSOE_API_KEY"):
-        return os.environ["ENTSOE_API_KEY"]
-    resp = boto3.client("ssm").get_parameter(
-        Name=os.environ["ENTSOE_PARAM_NAME"], WithDecryption=True
-    )
-    return resp["Parameter"]["Value"]
-    
+
 def lambda_handler(event, context):
-    """Lambda entry point. Optional event: {"delivery_dates": ["2026-10-27"]}."""
+    """Optional event: {"delivery_dates": ["2026-10-20"]}."""
     if event and event.get("delivery_dates"):
         dates = [date.fromisoformat(d) for d in event["delivery_dates"]]
     else:
         dates = default_dates(datetime.now(BERLIN).date())
-    return run(dates, os.environ["RAW_BUCKET"], os.environ["ENTSOE_API_KEY"])
 
+    databricks = None
+    if os.environ.get("DATABRICKS_HOST"):
+        databricks = {
+            "host": os.environ["DATABRICKS_HOST"],
+            "token": get_secret("DATABRICKS_TOKEN", "DATABRICKS_TOKEN_PARAM"),
+            "volume_base": os.environ.get("VOLUME_BASE", "/Volumes/workspace/landing/raw"),
+        }
 
-def load_env_file(path: str) -> None:
-    """Load KEY=VALUE lines from a local .env file. Real env vars take priority."""
-    if not os.path.exists(path):
-        return
-    with open(path, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, value = line.split("=", 1)
-            os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+    entsoe_token = get_secret("ENTSOE_API_KEY", "ENTSOE_PARAM_NAME")
+    return run(dates, os.environ["RAW_BUCKET"], entsoe_token, databricks)
 
 
 if __name__ == "__main__":
-    load_env_file(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
     logging.basicConfig(level=logging.INFO)
     parser = argparse.ArgumentParser()
     parser.add_argument("--date", action="append", help="YYYY-MM-DD, repeatable")
