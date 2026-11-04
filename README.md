@@ -1,0 +1,1 @@
+- Why build Python file to parse XML instead of using Spark: the logic stays readable, it can be unit-tested with pytest without Spark, and the notebook just imports it.
