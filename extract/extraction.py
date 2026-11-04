@@ -95,7 +95,7 @@ def s3_key(bzn: str, delivery_date: date) -> str:
     )
 
 
-def default_dates(today: date, lookback_days: int = 2) -> list[date]:
+def default_dates(today: date, lookback_days: int = 0) -> list[date]:
     """Tomorrow plus the last few days, to pick up ENTSO-E revisions."""
     return [today + timedelta(days=d) for d in range(1, -lookback_days - 1, -1)]
 
