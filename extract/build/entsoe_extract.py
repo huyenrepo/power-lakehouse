@@ -15,7 +15,10 @@ import boto3
 API_URL = "https://web-api.tp.entsoe.eu/api"
 BERLIN = ZoneInfo("Europe/Berlin")
 UTC = ZoneInfo("UTC")
-BIDDING_ZONES = {"DE-LU": "10Y1001A1001A82H"}
+BIDDING_ZONES = {"DE-LU": "10Y1001A1001A82H",
+                 "FR":    "10YFR-RTE------C",
+                 "NL":    "10YNL----------L",
+                 "AT":    "10YAT-APG------L"}
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -100,11 +103,15 @@ def default_dates(today: date, lookback_days: int = 0) -> list[date]:
     return [today + timedelta(days=d) for d in range(1, -lookback_days - 1, -1)]
 
 
-def run(delivery_dates, bucket, entsoe_token, databricks=None, s3=None) -> list[dict]:
+def run(delivery_dates, bucket, entsoe_token, databricks=None, s3=None, zones=None) -> list[dict]:
     """databricks: {"host", "token", "volume_base"} or None to skip the Volume upload."""
     s3 = s3 or boto3.client("s3")
+    zones = zones or list(BIDDING_ZONES.keys())
+    if isinstance(zones, str):
+        zones = [zones]
     results = []
-    for bzn, code in BIDDING_ZONES.items():
+    for bzn in zones:
+        code = BIDDING_ZONES[bzn]
         for d in delivery_dates:
             body = fetch_day_ahead_prices(entsoe_token, code, d)
             if body is None:
@@ -151,8 +158,9 @@ def lambda_handler(event, context):
             "volume_base": os.environ.get("VOLUME_BASE", "/Volumes/workspace/landing/raw"),
         }
 
+    zones = event.get("bidding_zones") if event else None
     entsoe_token = get_secret("ENTSOE_API_KEY", "ENTSOE_PARAM_NAME")
-    return run(dates, os.environ["RAW_BUCKET"], entsoe_token, databricks)
+    return run(dates, os.environ["RAW_BUCKET"], entsoe_token, databricks, zones=zones)
 
 
 if __name__ == "__main__":

@@ -71,7 +71,7 @@ resource "aws_lambda_function" "extract" {
   handler          = "entsoe_extract.lambda_handler"
   runtime          = "python3.12"
   architectures    = ["arm64"]
-  timeout          = 120
+  timeout          = 480
   memory_size      = 256
   filename         = data.archive_file.lambda.output_path
   source_code_hash = data.archive_file.lambda.output_base64sha256
