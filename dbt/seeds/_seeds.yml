@@ -1,0 +1,10 @@
+seeds:
+  - name: dim_bidding_zone
+    description: "Bidding zones covered by the pipeline"
+    columns:
+      - name: bzn
+        description: "Short zone code used in all fact tables"
+        data_tests: [unique, not_null]
+      - name: eic_code
+        description: "ENTSO-E area identifier"
+        data_tests: [unique, not_null]

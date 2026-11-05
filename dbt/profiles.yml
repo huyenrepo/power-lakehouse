@@ -1,0 +1,19 @@
+power_lakehouse:
+  target: dev
+  outputs:
+    dev:
+      type: databricks
+      host: "{{ env_var('DBT_DATABRICKS_HOST') }}"
+      http_path: "{{ env_var('DBT_DATABRICKS_HTTP_PATH') }}"
+      token: "{{ env_var('DBT_DATABRICKS_TOKEN') }}"
+      catalog: workspace
+      schema: gold_dev
+      threads: 4
+    prod:
+      type: databricks
+      host: "{{ env_var('DBT_DATABRICKS_HOST') }}"
+      http_path: "{{ env_var('DBT_DATABRICKS_HTTP_PATH') }}"
+      token: "{{ env_var('DBT_DATABRICKS_TOKEN') }}"
+      catalog: workspace
+      schema: gold
+      threads: 4

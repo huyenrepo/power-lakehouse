@@ -1,0 +1,42 @@
+models:
+  - name: fct_price_daily
+    description: "Daily price statistics per bidding zone"
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [bzn, delivery_date]
+      - dbt_utils.expression_is_true:
+          expression: "min_price <= base_price and base_price <= max_price"
+    columns:
+      - name: bzn
+        data_tests:
+          - relationships:
+              to: ref('dim_bidding_zone')
+              field: bzn
+      - name: base_price
+        description: "Average price over all slots of the delivery day"
+        data_tests: [not_null]
+      - name: peak_price
+        description: "Average price Mon–Fri 08:00–20:00 local; NULL on weekends"
+
+  - name: fct_spread_daily
+    description: "Daily price spread between each pair of bidding zones"
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [delivery_date, zone_a, zone_b]
+    columns:
+      - name: share_coupled_slots
+        data_tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1
+
+  - name: fct_price_risk_daily
+    description: "Daily base price change and 30-day rolling volatility"
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [bzn, delivery_date]
+    columns:
+      - name: volatility_30d
+        data_tests:
+          - dbt_utils.accepted_range:
+              min_value: 0

@@ -1,0 +1,20 @@
+name: power_lakehouse
+version: "1.0.0"
+profile: power_lakehouse
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+test-paths: ["tests"]
+
+models:
+  power_lakehouse:
+    staging:
+      +materialized: view
+    marts:
+      +materialized: table
+
+seeds:
+  power_lakehouse:
+    +column_types:
+      bzn: string
+      eic_code: string

@@ -1,0 +1,30 @@
+sources:
+  - name: silver
+    catalog: workspace
+    schema: silver
+    tables:
+      - name: day_ahead_price
+        description: "Day-ahead prices, latest revision, one row per zone and slot"
+        loaded_at_field: _silver_updated_at
+        freshness:
+          warn_after: {count: 36, period: hour}
+        data_tests:
+          - dbt_utils.unique_combination_of_columns:
+              combination_of_columns: [bzn, delivery_start_utc]
+        columns:
+          - name: bzn
+            data_tests:
+              - not_null
+              - relationships:
+                  to: ref('dim_bidding_zone')
+                  field: bzn
+          - name: delivery_start_utc
+            data_tests: [not_null]
+          - name: price
+            data_tests:
+              - not_null
+              - dbt_utils.accepted_range:
+                  min_value: -500
+                  max_value: 4000
+                  config:
+                    severity: warn
